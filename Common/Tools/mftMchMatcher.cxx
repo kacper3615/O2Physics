@@ -207,22 +207,74 @@ TrackAtPlane propagateMCHToZPlane(MCH const& track, float z, bool useMagneticFie
   return result;
 }
 
-/// Chi2 calculation using covariance-weighted differences in 5D parameter space
-float computeMatchChi2(const TrackAtPlane& mch, const TrackAtPlane& mft)
+/// Chi2 calculation with full covariance matrix inversion
+float computeMatchChi2(const TrackAtPlane& mchTrack, const TrackAtPlane& mftTrack)
 {
-  float dx = mch.x - mft.x;
-  float dy = mch.y - mft.y;
-  float dphi = mch.phi - mft.phi;
-  float dtanl = mch.tanl - mft.tanl;
-  float dinvqpt = mch.invQPt - mft.invQPt;
-
-  float chi2 = (dx * dx / (mch.cXX + mft.cXX + 1e-10)) +
-               (dy * dy / (mch.cYY + mft.cYY + 1e-10)) +
-               (dphi * dphi / (mch.cPhiPhi + mft.cPhiPhi + 1e-10)) +
-               (dtanl * dtanl / (mch.cTglTgl + mft.cTglTgl + 1e-10)) +
-               (dinvqpt * dinvqpt / (mch.c1Pt21Pt2 + mft.c1Pt21Pt2 + 1e-10));
-
-  return chi2;
+  // MFT parameters
+  SMatrix5 m_k(mftTrack.x, mftTrack.y, mftTrack.phi, mftTrack.tanl, mftTrack.invQPt);
+  
+  // MFT covariance
+  SMatrix55 V_k;
+  V_k(0, 0) = mftTrack.cXX;
+  V_k(0, 1) = mftTrack.cXY;
+  V_k(1, 1) = mftTrack.cYY;
+  V_k(0, 2) = mftTrack.cPhiX;
+  V_k(1, 2) = mftTrack.cPhiY;
+  V_k(2, 2) = mftTrack.cPhiPhi;
+  V_k(0, 3) = mftTrack.cTglX;
+  V_k(1, 3) = mftTrack.cTglY;
+  V_k(2, 3) = mftTrack.cTglPhi;
+  V_k(3, 3) = mftTrack.cTglTgl;
+  V_k(0, 4) = mftTrack.c1PtX;
+  V_k(1, 4) = mftTrack.c1PtY;
+  V_k(2, 4) = mftTrack.c1PtPhi;
+  V_k(3, 4) = mftTrack.c1PtTgl;
+  V_k(4, 4) = mftTrack.c1Pt21Pt2;
+  
+  // MCH parameters
+  SMatrix5 GlobalMuonTrackParameters(mchTrack.x, mchTrack.y, mchTrack.phi, 
+                                      mchTrack.tanl, mchTrack.invQPt);
+  
+  // MCH covariance
+  SMatrix55 GlobalMuonTrackCovariances;
+  GlobalMuonTrackCovariances(0, 0) = mchTrack.cXX;
+  GlobalMuonTrackCovariances(0, 1) = mchTrack.cXY;
+  GlobalMuonTrackCovariances(1, 1) = mchTrack.cYY;
+  GlobalMuonTrackCovariances(0, 2) = mchTrack.cPhiX;
+  GlobalMuonTrackCovariances(1, 2) = mchTrack.cPhiY;
+  GlobalMuonTrackCovariances(2, 2) = mchTrack.cPhiPhi;
+  GlobalMuonTrackCovariances(0, 3) = mchTrack.cTglX;
+  GlobalMuonTrackCovariances(1, 3) = mchTrack.cTglY;
+  GlobalMuonTrackCovariances(2, 3) = mchTrack.cTglPhi;
+  GlobalMuonTrackCovariances(3, 3) = mchTrack.cTglTgl;
+  GlobalMuonTrackCovariances(0, 4) = mchTrack.c1PtX;
+  GlobalMuonTrackCovariances(1, 4) = mchTrack.c1PtY;
+  GlobalMuonTrackCovariances(2, 4) = mchTrack.c1PtPhi;
+  GlobalMuonTrackCovariances(3, 4) = mchTrack.c1PtTgl;
+  GlobalMuonTrackCovariances(4, 4) = mchTrack.c1Pt21Pt2;
+  
+  // Sum of covariances
+  SMatrix55Std sumCov = V_k + GlobalMuonTrackCovariances;
+  
+  // Invert
+  SMatrix55Std invResCov = sumCov;
+  bool inversionOk = invResCov.Invert();
+  if (!inversionOk) {
+    return 999999.0f; // Very large value for failed inversion
+  }
+  
+  // Residuals
+  SMatrix5 r_k_kminus1 = m_k - GlobalMuonTrackParameters;
+  
+  // Chi2 = r^T * C^-1 * r
+  auto chi2 = ROOT::Math::Similarity(r_k_kminus1, invResCov);
+  
+  // Check for valid result
+  if (!isfinite(chi2) || chi2 < 0.0) {
+    return 999999.0f;
+  }
+  
+  return static_cast<float>(chi2);
 }
 
 void printUsage(const char* progName)
@@ -382,7 +434,6 @@ int main(int argc, char** argv)
       covTree->SetBranchAddress("fRho1PtPhi", &rho1PtPhi);
       covTree->SetBranchAddress("fRho1PtTgl", &rho1PtTgl);
       
-      /// Build index map: fIndexMFTTracks -> covTree entry (sparse mapping)
       Long64_t nCov = covTree->GetEntries();
       for (Long64_t iCov = 0; iCov < nCov; ++iCov) {
         covTree->GetEntry(iCov);
