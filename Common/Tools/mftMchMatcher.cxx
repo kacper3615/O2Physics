@@ -20,7 +20,6 @@
 
 #include <DetectorsBase/Propagator.h>
 #include <Field/MagneticField.h>
-#include <GlobalTracking/MatchGlobalFwd.h>
 #include <MCHTracking/TrackExtrap.h>
 #include <ReconstructionDataFormats/TrackFwd.h>
 
@@ -136,8 +135,9 @@ TrackAtPlane propagateMFTToZPlane(MFT const& track, float z, bool useMagneticFie
   return result;
 }
 
+/// MCH track propagation to Z plane (with or without magnetic field and absorber)
 template <typename MCH>
-TrackAtPlane propagateMCHToZPlane(MCH const& track, float z, bool useMagneticField, o2::globaltracking::MatchGlobalFwd& mMatching)
+TrackAtPlane propagateMCHToZPlane(MCH const& track, float z, bool useMagneticField)
 {
   TrackAtPlane result;
 
@@ -181,15 +181,13 @@ TrackAtPlane propagateMCHToZPlane(MCH const& track, float z, bool useMagneticFie
     o2::mch::TrackExtrap::extrapToZ(mchTrack, z);
   }
 
-  auto fwdTrack = mMatching.MCHtoFwd(mchTrack);
+  result.x = mchTrack.getX();
+  result.y = mchTrack.getY();
+  result.phi = mchTrack.getPhi();
+  result.tanl = mchTrack.getTanl();
+  result.invQPt = mchTrack.getInverseBendingMomentum();
 
-  result.x = fwdTrack.getX();
-  result.y = fwdTrack.getY();
-  result.phi = fwdTrack.getPhi();
-  result.tanl = fwdTrack.getTanl();
-  result.invQPt = fwdTrack.getInvQPt();
-
-  const auto& cov = fwdTrack.getCovariances();
+  const auto& cov = mchTrack.getCovariances();
   result.cXX = cov(0, 0);
   result.cXY = cov(0, 1);
   result.cYY = cov(1, 1);
@@ -293,7 +291,6 @@ int main(int argc, char** argv)
   }
 
   o2::field::MagneticField* fieldB = nullptr;
-  o2::globaltracking::MatchGlobalFwd mMatching;
   
   if (useField) {
     cout << "Initializing magnetic field for field-based propagation..." << endl;
@@ -646,7 +643,7 @@ int main(int argc, char** argv)
       int collisionId = mchTrack.collisionId;
       
       /// Propagate MCH track to matching plane
-      TrackAtPlane mchAtPlane = propagateMCHToZPlane(mchTrack, matchingPlaneZ, useField, mMatching);
+      TrackAtPlane mchAtPlane = propagateMCHToZPlane(mchTrack, matchingPlaneZ, useField);
 
       /// Find matching MFT tracks from same collision
       struct Candidate {
