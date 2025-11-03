@@ -23,3 +23,14 @@ o2physics_add_library(trackSelectionRequest
 o2physics_target_root_dictionary(trackSelectionRequest
     HEADERS trackSelectionRequest.h
     LINKDEF trackSelectionRequestLinkDef.h)
+    
+o2physics_add_executable(mft-mch-matcher
+    SOURCES mftMchMatcher.cxx
+    PUBLIC_LINK_LIBRARIES O2Physics::AnalysisCore
+                          O2::GlobalTracking
+                          O2::ReconstructionDataFormats
+                          O2::MCHTracking
+                          O2::DetectorsBase
+                          O2::Field
+                          ROOT::Tree
+                          ROOT::TreePlayer)
