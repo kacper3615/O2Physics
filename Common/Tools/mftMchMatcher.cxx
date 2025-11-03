@@ -73,65 +73,9 @@ struct MCHTrack {
   int indexMFTOriginal;
 };
 
-/// Linear propagation(no magnetic field)
-TrackAtPlane propagateToPlaneLinear(float z_start, float z_target,
-                                   float x, float y, float phi, float tgl, float signed1Pt,
-                                   float cXX, float cXY, float cYY,
-                                   float cPhiX, float cPhiY, float cPhiPhi,
-                                   float cTglX, float cTglY, float cTglPhi, float cTglTgl,
-                                   float c1PtX, float c1PtY, float c1PtPhi, float c1PtTgl, float c1Pt21Pt2)
-{
-  TrackAtPlane result;
-
-  const auto dZ = z_target - z_start;
-  const auto invtanl = 1.0f / tgl;
-  const auto n = dZ * invtanl;
-  const auto m = n * invtanl;
-
-  const auto sinphi = std::sin(phi);
-  const auto cosphi = std::cos(phi);
-
-  // Propagate parameters
-  result.x = x + n * cosphi;
-  result.y = y + n * sinphi;
-  result.phi = phi;
-  result.tanl = tgl;
-  result.invQPt = signed1Pt;
-
-  /// Covariance propagation with analytical Jacobian
-  result.cXX = cXX + 2.0f * cPhiX * (-n * sinphi) + 2.0f * cTglX * (-m * cosphi) + 
-               cPhiPhi * (-n * sinphi) * (-n * sinphi) + 2.0f * cTglPhi * (-n * sinphi) * (-m * cosphi) + 
-               cTglTgl * (-m * cosphi) * (-m * cosphi);
-
-  result.cXY = cXY + cPhiX * (n * cosphi) + cPhiY * (-n * sinphi) + cTglX * (-m * sinphi) + cTglY * (-m * cosphi) + 
-               cPhiPhi * (-n * sinphi) * (n * cosphi) + cTglPhi * ((-n * sinphi) * (-m * sinphi) + (n * cosphi) * (-m * cosphi)) + 
-               cTglTgl * (-m * cosphi) * (-m * sinphi);
-
-  result.cYY = cYY + 2.0f * cPhiY * (n * cosphi) + 2.0f * cTglY * (-m * sinphi) + 
-               cPhiPhi * (n * cosphi) * (n * cosphi) + 2.0f * cTglPhi * (n * cosphi) * (-m * sinphi) + 
-               cTglTgl * (-m * sinphi) * (-m * sinphi);
-
-  result.cPhiX = cPhiX + cPhiPhi * (-n * sinphi) + cTglPhi * (-m * cosphi);
-  result.cPhiY = cPhiY + cPhiPhi * (n * cosphi) + cTglPhi * (-m * sinphi);
-  result.cPhiPhi = cPhiPhi;
-
-  result.cTglX = cTglX + cTglPhi * (-n * sinphi) + cTglTgl * (-m * cosphi);
-  result.cTglY = cTglY + cTglPhi * (n * cosphi) + cTglTgl * (-m * sinphi);
-  result.cTglPhi = cTglPhi;
-  result.cTglTgl = cTglTgl;
-
-  result.c1PtX = c1PtX + c1PtPhi * (-n * sinphi) + c1PtTgl * (-m * cosphi);
-  result.c1PtY = c1PtY + c1PtPhi * (n * cosphi) + c1PtTgl * (-m * sinphi);
-  result.c1PtPhi = c1PtPhi;
-  result.c1PtTgl = c1PtTgl;
-  result.c1Pt21Pt2 = c1Pt21Pt2;
-
-  return result;
-}
-
-/// MFT propagation with magnetic field (helix model)
+/// MFT track propagation to Z plane (with or without magnetic field)
 template <typename MFT>
-TrackAtPlane propagateMFTToPlaneWithField(MFT const& track, float z, o2::field::MagneticField* fieldB)
+TrackAtPlane propagateMFTToZPlane(MFT const& track, float z, bool useMagneticField, o2::field::MagneticField* fieldB)
 {
   TrackAtPlane result;
 
@@ -156,8 +100,13 @@ TrackAtPlane propagateMFTToPlaneWithField(MFT const& track, float z, o2::field::
 
   o2::track::TrackParCovFwd fwdTrack{track.z, pars, covs, 0.0};
 
-  double centerPos[3] = {track.x, track.y, (track.z + z) / 2.0};
-  float Bz = fieldB->getBz(centerPos);
+  // Propagate with or without magnetic field
+  // When Bz=0, propagateToZ automatically uses linear propagation
+  float Bz = 0.0f;
+  if (useMagneticField && fieldB) {
+    double centerPos[3] = {track.x, track.y, (track.z + z) / 2.0};
+    Bz = fieldB->getBz(centerPos);
+  }
 
   fwdTrack.propagateToZ(z, Bz);
 
@@ -187,9 +136,8 @@ TrackAtPlane propagateMFTToPlaneWithField(MFT const& track, float z, o2::field::
   return result;
 }
 
-/// MCH propagation with magnetic field and absorber energy loss
 template <typename MCH>
-TrackAtPlane propagateMCHToPlaneWithField(MCH const& track, float z, o2::globaltracking::MatchGlobalFwd& mMatching)
+TrackAtPlane propagateMCHToZPlane(MCH const& track, float z, bool useMagneticField, o2::globaltracking::MatchGlobalFwd& mMatching)
 {
   TrackAtPlane result;
 
@@ -215,15 +163,21 @@ TrackAtPlane propagateMCHToPlaneWithField(MCH const& track, float z, o2::globalt
 
   o2::mch::TrackParam mchTrack(track.z, pars, covs);
 
-  /// Special handling for tracks crossing the absorber
-  const float absBack = -505.f;
-  const float absFront = -90.f;
+  if (useMagneticField) {
+    /// Special handling for tracks crossing the absorber with magnetic field
+    const float absBack = -505.f;
+    const float absFront = -90.f;
 
-  if (track.z < absBack && z > absFront) {
-    if (!o2::mch::TrackExtrap::extrapToVertexWithoutBranson(mchTrack, z)) {
-      cerr << "Warning: MCH track extrapolation to vertex failed" << endl;
+    if (track.z < absBack && z > absFront) {
+      if (!o2::mch::TrackExtrap::extrapToVertexWithoutBranson(mchTrack, z)) {
+        cerr << "Warning: MCH track extrapolation to vertex failed" << endl;
+      }
+    } else {
+      o2::mch::TrackExtrap::extrapToZ(mchTrack, z);
     }
   } else {
+    /// Linear propagation without magnetic field
+    /// TrackExtrap with no field initialized will use linear propagation
     o2::mch::TrackExtrap::extrapToZ(mchTrack, z);
   }
 
@@ -281,7 +235,7 @@ void printUsage(const char* progName)
        << "  -o, --output <file>      Output ROOT file (default: mftMchMatches.root)\n"
        << "  -z, --matching-z <value> Z position of matching plane in cm (default: -77.5)\n"
        << "  -n, --max-candidates <N> Max candidates per MCH track, 0=all (default: 0)\n"
-       << "  -f, --use-field          Use magnetic field propagation (default: linear)\n" /// It doesn't work well, still TODO
+       << "  -f, --use-field          Use magnetic field for propagation (default: linear)\n"
        << "  -h, --help               Show this help message\n"
        << endl;
 }
@@ -692,20 +646,7 @@ int main(int argc, char** argv)
       int collisionId = mchTrack.collisionId;
       
       /// Propagate MCH track to matching plane
-      TrackAtPlane mchAtPlane;
-      
-      if (useField) {
-        mchAtPlane = propagateMCHToPlaneWithField(mchTrack, matchingPlaneZ, mMatching);
-      } else {
-        mchAtPlane = propagateToPlaneLinear(
-          mchTrack.z, matchingPlaneZ,
-          mchTrack.x, mchTrack.y, mchTrack.phi, mchTrack.tgl, mchTrack.signed1Pt,
-          mchTrack.cXX, mchTrack.cXY, mchTrack.cYY,
-          mchTrack.cPhiX, mchTrack.cPhiY, mchTrack.cPhiPhi,
-          mchTrack.cTglX, mchTrack.cTglY, mchTrack.cTglPhi, mchTrack.cTglTgl,
-          mchTrack.c1PtX, mchTrack.c1PtY, mchTrack.c1PtPhi, mchTrack.c1PtTgl, mchTrack.c1Pt21Pt2
-        );
-      }
+      TrackAtPlane mchAtPlane = propagateMCHToZPlane(mchTrack, matchingPlaneZ, useField, mMatching);
 
       /// Find matching MFT tracks from same collision
       struct Candidate {
@@ -718,20 +659,7 @@ int main(int argc, char** argv)
       for (size_t i = 0; i < mftTracks.size(); i++) {
         if (mftTracks[i].collisionId != collisionId) continue;
 
-        TrackAtPlane mftAtPlane;
-        
-        if (useField) {
-          mftAtPlane = propagateMFTToPlaneWithField(mftTracks[i], matchingPlaneZ, fieldB);
-        } else {
-          mftAtPlane = propagateToPlaneLinear(
-            mftTracks[i].z, matchingPlaneZ,
-            mftTracks[i].x, mftTracks[i].y, mftTracks[i].phi, mftTracks[i].tgl, mftTracks[i].signed1Pt,
-            mftTracks[i].cXX, mftTracks[i].cXY, mftTracks[i].cYY,
-            mftTracks[i].cPhiX, mftTracks[i].cPhiY, mftTracks[i].cPhiPhi,
-            mftTracks[i].cTglX, mftTracks[i].cTglY, mftTracks[i].cTglPhi, mftTracks[i].cTglTgl,
-            mftTracks[i].c1PtX, mftTracks[i].c1PtY, mftTracks[i].c1PtPhi, mftTracks[i].c1PtTgl, mftTracks[i].c1Pt21Pt2
-          );
-        }
+        TrackAtPlane mftAtPlane = propagateMFTToZPlane(mftTracks[i], matchingPlaneZ, useField, fieldB);
 
         float chi2 = computeMatchChi2(mchAtPlane, mftAtPlane);
         candidates.push_back({i, mftAtPlane, chi2});
